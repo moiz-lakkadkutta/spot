@@ -1,0 +1,20 @@
+{
+  "expo": {
+    "name": "Spot Camera",
+    "slug": "spot-phone",
+    "version": "0.1.0",
+    "userInterfaceStyle": "dark",
+    "scheme": "spot",
+    "android": {
+      "package": "dev.moizp.spot.phone",
+      "permissions": [
+        "CAMERA"
+      ]
+    },
+    "ios": {
+      "infoPlist": {
+        "NSCameraUsageDescription": "Spot uses the camera to see the shape of your movement. It never sends pictures."
+      }
+    }
+  }
+}

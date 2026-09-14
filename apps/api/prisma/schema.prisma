@@ -1,0 +1,73 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Person {
+  id String @id @default(cuid() )
+  deviceId String @unique
+  name String?
+  textScale String @default("large")
+  voiceOn Boolean @default(true)
+  sessionMinutes Int @default(12)
+  restS Int @default(30)
+  programmeId String?
+  programme Programme? @relation(fields: [programmeId], references: [id])
+  firstRunDone Boolean @default(false)
+  sessions Session[]
+  summaries Summary[]
+  pairings Pairing[]
+}
+model Programme {
+  id String @id @default(cuid())
+  slug String @unique
+  name String
+  description String
+  exercises Json
+  people Person[]
+  sessions Session[]
+}
+model Session {
+  id String @id @default(cuid())
+  personId String
+  person Person @relation(fields: [personId], references: [id], onDelete: Cascade)
+  programmeId String
+  programme Programme @relation(fields: [programmeId], references: [id])
+  startedAt DateTime @default(now())
+  finishedAt DateTime?
+  planJson Json
+  completed Boolean @default(false)
+  sets SetResult[]
+}
+model SetResult {
+  id String @id @default(cuid())
+  sessionId String
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  exerciseId String
+  setIndex Int
+  reps Int
+  targetReps Int
+  peakRange Float
+  avgRepS Float
+  cuesJson Json
+}
+model Summary {
+  id String @id @default(cuid())
+  personId String
+  person Person @relation(fields: [personId], references: [id], onDelete: Cascade)
+  weekStart DateTime
+  text String
+  stats Json
+  sharedAt DateTime?
+}
+model Pairing {
+  code String @id
+  personId String
+  person Person @relation(fields: [personId], references: [id], onDelete: Cascade)
+  phoneConnected Boolean @default(false)
+  createdAt DateTime @default(now())
+}
