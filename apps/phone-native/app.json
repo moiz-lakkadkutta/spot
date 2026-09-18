@@ -1,0 +1,23 @@
+{
+  "expo": {
+    "name": "Spot Camera (native)",
+    "slug": "spot-phone-native",
+    "version": "0.1.0",
+    "userInterfaceStyle": "dark",
+    "scheme": "spot-native",
+    "newArchEnabled": true,
+    "android": {
+      "package": "dev.moizp.spot.phonenative",
+      "permissions": ["CAMERA"]
+    },
+    "ios": {
+      "infoPlist": {
+        "NSCameraUsageDescription": "Spot uses the camera to see the shape of your movement. It never sends pictures."
+      }
+    },
+    "plugins": [
+      ["react-native-vision-camera", { "cameraPermissionText": "Spot uses the camera to see the shape of your movement. It never sends pictures.", "enableCodeScanner": false }],
+      ["react-native-mediapipe-posedetection", { "assetsPaths": ["./assets/models/"] }]
+    ]
+  }
+}

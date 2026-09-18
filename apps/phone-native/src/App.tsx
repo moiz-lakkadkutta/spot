@@ -1,34 +1,30 @@
 import React, { useEffect, useRef, useState } from 'react'
 import { Platform, Pressable, SafeAreaView, ScrollView, Text, TextInput, View } from 'react-native'
-import { WebView } from 'react-native-webview'
-import { io, type Socket } from 'socket.io-client'
+import { Camera, useCameraDevice, useCameraFormat, useCameraPermission } from 'react-native-vision-camera'
+import { Delegate, RunningMode, usePoseDetection, type DetectionError, type PoseDetectionResultBundle } from 'react-native-mediapipe-posedetection'
 import * as Battery from 'expo-battery'
-import { useCameraPermissions } from 'expo-camera'
 import { useKeepAwake } from 'expo-keep-awake'
 import { File, Paths } from 'expo-file-system'
 import * as Sharing from 'expo-sharing'
-import { POSE_HTML } from './pose-html'
-import { DelayMeter, buildFixture, fpsOf, gaps, jitter, type FrameMsg, type Jitter } from './stats'
-
-const API = process.env.EXPO_PUBLIC_API_URL ?? 'http://localhost:4000'
-const C = { ground: '#121719', surface: '#1B2225', text: '#EDEEEA', dim: '#A9B3B0', good: '#7FB89A', adjust: '#E0B072', blue: '#8FB1C9' }
-const CONSENT = 'Only the shape of your movement is recorded. No pictures.'
-const BATTERY_CHECK_MIN = 10
-const STILL_MS = 3000
+import { DelayMeter, buildFixture, gaps, jitter, mean, percentile, type FrameMsg, type Jitter } from '../../phone/src/stats'
 
 /**
- * The phone is a dumb sensor: camera → MediaPipe Pose Landmarker (Tasks JS, in a WebView — the SPOT-001 "WebView path";
- * the native path is the separate dev-build app apps/phone-native) → 33 landmarks → Socket.IO `frame` at ≤ 15 fps.
- * No pixels ever leave the phone. Three modes: Connect (send to the TV), Check (fps / jitter / battery harness),
- * Record (landmark fixtures for packages/heuristics/fixtures). Runbook: docs/spikes/SPOT-001-pose.md.
+ * SPOT-001 "native path": the same measurement harness as apps/phone (WebView path) but with MediaPipe Pose Landmarker
+ * running natively through react-native-vision-camera + react-native-mediapipe-posedetection (a VisionCamera frame
+ * processor plugin around MediaPipe Tasks). Needs a development build (`pnpm build` → EAS); it cannot run in Expo Go.
+ * Same rules as the WebView app: nothing but landmarks leaves the camera pipeline; no pixels are stored or sent.
+ * Runbook and library citations: docs/spikes/SPOT-001-pose.md §2.
  */
-type Mode = 'connect' | 'measure' | 'record'
-type Stats = { fps: number; camFps: number; dropped: number; droppedPerS: number; inferMs: number; inferP95: number; noPose: number; hasVisibility: boolean; delegate: 'GPU' | 'CPU' }
-type Ready = { delegate: 'GPU' | 'CPU'; fallback: string | null; loadMs: number; cam: { w: number; h: number; fps: number }; secure: boolean; rvfc: boolean; ua: string }
-type Msg = ({ type: 'frame' } & FrameMsg) | ({ type: 'stats' } & Stats) | ({ type: 'ready' } & Ready) | { type: 'error'; message: string }
-type BatteryLog = { start?: number; state?: Battery.BatteryState; now?: number; at5?: number; at10?: number; startedAt: number }
+const C = { ground: '#121719', surface: '#1B2225', text: '#EDEEEA', dim: '#A9B3B0', good: '#7FB89A', adjust: '#E0B072', blue: '#8FB1C9' }
+const CONSENT = 'Only the shape of your movement is recorded. No pictures.'
+const MODEL = 'pose_landmarker_lite.task' // copied into the app by the library's config plugin from assets/models/
+const BATTERY_CHECK_MIN = 10
+const STILL_MS = 3000
+type Mode = 'measure' | 'record'
+type Stats = { fps: number; camFps: number; droppedPerS: number; inferMs: number; inferP95: number; noPose: number; hasVisibility: boolean }
+type BatteryLog = { start?: number; state?: Battery.BatteryState; now?: number; at5?: number; at10?: number }
 
-const androidConst = Platform.constants as { Brand?: string; Model?: string; Release?: string }
+const androidConst = Platform.constants as { Brand?: string; Model?: string }
 const PHONE = { model: Platform.OS === 'android' ? `${androidConst.Brand ?? ''} ${androidConst.Model ?? 'Android'}`.trim() : Platform.OS === 'ios' ? 'iPhone' : Platform.OS, os: `${Platform.OS} ${String(Platform.Version)}` }
 const mmss = (ms: number) => `${Math.floor(ms / 60000)}:${String(Math.floor((ms % 60000) / 1000)).padStart(2, '0')}`
 const pct = (v?: number) => (v === undefined || v < 0 ? '?' : `${Math.round(v * 100)} %`)
@@ -50,17 +46,12 @@ function Btn({ label, onPress, tone = C.blue, big = false, disabled = false, hin
 
 export default function App() {
   const [mode, setMode] = useState<Mode | null>(null)
-  const [code, setCode] = useState('')
-  if (mode) return <Live mode={mode} code={code.toUpperCase()} onExit={() => setMode(null)} />
+  if (mode) return <Live mode={mode} onExit={() => setMode(null)} />
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: C.ground }}>
       <ScrollView contentContainerStyle={{ padding: 24, gap: 16, justifyContent: 'center', flexGrow: 1 }}>
-        <Text style={{ color: C.text, fontSize: 28, fontWeight: '600' }}>Type the code from your TV</Text>
-        <TextInput value={code} onChangeText={setCode} autoCapitalize="characters" maxLength={6} placeholder="ABC234" placeholderTextColor={C.dim} style={{ color: C.text, fontSize: 40, letterSpacing: 10, backgroundColor: C.surface, padding: 18, borderRadius: 10, textAlign: 'center' }} accessibilityLabel="Six character code" />
-        <Btn label="Connect" onPress={() => setMode('connect')} disabled={code.length < 6} hint="Connect to the TV and start the camera" />
+        <Text style={{ color: C.text, fontSize: 28, fontWeight: '600' }}>Spot camera check (native)</Text>
         <Text style={{ color: C.dim, fontSize: 16, lineHeight: 24 }}>Spot uses the camera to see the shape of your movement. It never sends pictures.</Text>
-        <View style={{ height: 1, backgroundColor: C.surface, marginVertical: 8 }} />
-        <Text style={{ color: C.dim, fontSize: 16 }}>For setting up (no TV needed):</Text>
         <Btn label="Check the camera" onPress={() => setMode('measure')} tone={C.good} hint="Measure frames per second, steadiness and battery use" />
         <Btn label="Record a session" onPress={() => setMode('record')} tone={C.adjust} hint="Record the shape of one sit-to-stand session as a file" />
         <Text style={{ color: C.dim, fontSize: 14 }}>{PHONE.model} · {PHONE.os}</Text>
@@ -69,60 +60,71 @@ export default function App() {
   )
 }
 
-function Live({ mode, code, onExit }: { mode: Mode; code: string; onExit: () => void }) {
+function Live({ mode, onExit }: { mode: Mode; onExit: () => void }) {
   useKeepAwake()
-  const [perm, requestPerm] = useCameraPermissions()
-  const [ready, setReady] = useState<Ready | null>(null)
+  const { hasPermission, requestPermission } = useCameraPermission()
+  const device = useCameraDevice('front')
+  const format = useCameraFormat(device, [{ videoResolution: { width: 640, height: 480 } }, { fps: 30 }])
+  const [ready, setReady] = useState<{ at: number; inputW: number; inputH: number } | null>(null)
   const [stats, setStats] = useState<Stats | null>(null)
   const [err, setErr] = useState<string | null>(null)
   const [elapsed, setElapsed] = useState(0)
-  const [bat, setBat] = useState<BatteryLog>({ startedAt: Date.now() })
+  const [bat, setBat] = useState<BatteryLog>({})
   const [jit, setJit] = useState<Jitter | null>(null)
   const [stillLeft, setStillLeft] = useState<number | null>(null)
   const [rec, setRec] = useState<{ frames: number; reps: number; gaps: number; shared?: string; error?: string } | null>(null)
   const [notes, setNotes] = useState('')
-  const socket = useRef<Socket | null>(null)
-  const lastSent = useRef(0)
-  const delay = useRef(new DelayMeter())
   const [delayRead, setDelayRead] = useState({ mean: 0, p95: 0, n: 0 })
+  const delay = useRef(new DelayMeter())
   const still = useRef<{ until: number; frames: FrameMsg[] } | null>(null)
   const recRef = useRef<{ frames: FrameMsg[]; repAt: number[]; on: boolean } | null>(null)
   const startedAt = useRef(Date.now())
+  const win = useRef<{ frames: number; noPose: number; withVis: number; infer: number[]; t0: number }>({ frames: 0, noPose: 0, withVis: 0, infer: [], t0: Date.now() })
   const lastStats = useRef<Stats | null>(null)
+  const camFps = format?.maxFps ?? 30
 
-  useEffect(() => { if (!perm?.granted) void requestPerm() }, [perm?.granted, requestPerm])
-  useEffect(() => {
-    if (mode !== 'connect') return
-    const s = io(API); s.emit('join', { code, role: 'phone' }); socket.current = s
-    return () => { s.disconnect(); socket.current = null }
-  }, [mode, code])
+  useEffect(() => { if (!hasPermission) void requestPermission() }, [hasPermission, requestPermission])
   useEffect(() => {
     void Battery.getPowerStateAsync().then((p) => setBat((b) => ({ ...b, start: p.batteryLevel, state: p.batteryState, now: p.batteryLevel })))
     const sub = Battery.addBatteryLevelListener(({ batteryLevel }) => setBat((b) => ({ ...b, now: batteryLevel })))
     const t5 = setTimeout(() => void Battery.getBatteryLevelAsync().then((v) => setBat((b) => ({ ...b, at5: v }))), 5 * 60000)
-    const t10 = setTimeout(() => void Battery.getBatteryLevelAsync().then((v) => { setBat((b) => ({ ...b, at10: v })); console.log('[spot-battery]', JSON.stringify({ after10min: v, phone: PHONE })) }), BATTERY_CHECK_MIN * 60000)
+    const t10 = setTimeout(() => void Battery.getBatteryLevelAsync().then((v) => { setBat((b) => ({ ...b, at10: v })); console.log('[spot-battery]', JSON.stringify({ after10min: v, phone: PHONE, path: 'native' })) }), BATTERY_CHECK_MIN * 60000)
     const tick = setInterval(() => {
       setElapsed(Date.now() - startedAt.current)
       setDelayRead(delay.current.read())
-      if (still.current && still.current.until <= Date.now()) { setJit(jitter(still.current.frames)); console.log('[spot-jitter]', JSON.stringify(jitter(still.current.frames))); still.current = null; setStillLeft(null) } else if (still.current) setStillLeft(still.current.until - Date.now())
-      if (recRef.current?.on) { const g = gaps(recRef.current.frames); setRec({ frames: recRef.current.frames.length, reps: recRef.current.repAt.length, gaps: g.count }) }
+      if (still.current && still.current.until <= Date.now()) { const j = jitter(still.current.frames); setJit(j); console.log('[spot-jitter]', JSON.stringify({ ...j, path: 'native' })); still.current = null; setStillLeft(null) } else if (still.current) setStillLeft(still.current.until - Date.now())
+      if (recRef.current?.on) setRec({ frames: recRef.current.frames.length, reps: recRef.current.repAt.length, gaps: gaps(recRef.current.frames).count })
     }, 250)
-    const log = setInterval(() => { if (lastStats.current) console.log('[spot-stats]', JSON.stringify({ ...lastStats.current, handoff: delay.current.read(), phone: PHONE, mode })) }, 5000)
-    return () => { sub.remove(); clearTimeout(t5); clearTimeout(t10); clearInterval(tick); clearInterval(log) }
-  }, [mode])
+    const stat = setInterval(() => {
+      const w = win.current, s = (Date.now() - w.t0) / 1000
+      if (s < 1) return
+      const fps = +(w.frames / s).toFixed(1)
+      const next: Stats = { fps, camFps, droppedPerS: +Math.max(0, camFps - fps).toFixed(1), inferMs: +mean(w.infer).toFixed(1), inferP95: +percentile(w.infer, 95).toFixed(1), noPose: w.noPose, hasVisibility: w.frames > 0 && w.withVis === w.frames }
+      lastStats.current = next; setStats(next)
+      win.current = { frames: 0, noPose: 0, withVis: 0, infer: [], t0: Date.now() }
+    }, 1000)
+    const log = setInterval(() => { if (lastStats.current) console.log('[spot-stats]', JSON.stringify({ ...lastStats.current, handoff: delay.current.read(), phone: PHONE, mode, path: 'native' })) }, 5000)
+    return () => { sub.remove(); clearTimeout(t5); clearTimeout(t10); clearInterval(tick); clearInterval(stat); clearInterval(log) }
+  }, [mode, camFps])
 
-  const onMessage = (e: { nativeEvent: { data: string } }) => {
-    let msg: Msg
-    try { msg = JSON.parse(e.nativeEvent.data) as Msg } catch { return }
-    if (msg.type === 'stats') { lastStats.current = msg; return setStats(msg) }
-    if (msg.type === 'ready') { console.log('[spot-ready]', JSON.stringify({ ...msg, phone: PHONE })); return setReady(msg) }
-    if (msg.type === 'error') { console.log('[spot-error]', msg.message); return setErr(msg.message) }
-    const frame: FrameMsg = { t: msg.t, lm: msg.lm }
-    delay.current.push(Date.now() - frame.t)
+  const onResults = (r: PoseDetectionResultBundle) => {
+    const now = Date.now()
+    if (!ready) setReady({ at: now, inputW: r.inputImageWidth, inputH: r.inputImageHeight })
+    const w = win.current
+    w.frames++; w.infer.push(r.inferenceTime)
+    const p = r.results[0]?.landmarks[0]
+    if (!p || p.length !== 33) { w.noPose++; w.withVis++; return }
+    let vis = true
+    const lm = p.map((q) => { const hasV = typeof q.visibility === 'number'; if (!hasV) vis = false; return { x: q.x, y: q.y, z: q.z, v: hasV ? Math.max(0, Math.min(1, q.visibility as number)) : 1 } })
+    if (vis) w.withVis++
+    const frame: FrameMsg = { t: now, lm }
+    // Hand-off delay: the library does not expose the camera timestamp, so this only measures the JS side (event → here) and reads ≈ 0.
+    delay.current.push(0)
     if (still.current) still.current.frames.push(frame)
     if (recRef.current?.on) recRef.current.frames.push(frame)
-    if (mode === 'connect' && frame.t - lastSent.current >= 1000 / 15) { lastSent.current = frame.t; socket.current?.volatile.emit('frame', { code, frame }) }
   }
+  const pose = usePoseDetection({ onResults, onError: (e: DetectionError) => { console.log('[spot-error]', e.message); setErr(`${e.message} (code ${e.code})`) } }, RunningMode.LIVE_STREAM, MODEL, { numPoses: 1, delegate: Delegate.GPU, mirrorMode: 'no-mirror' })
+
   const holdStill = () => { setJit(null); still.current = { until: Date.now() + STILL_MS, frames: [] }; setStillLeft(STILL_MS) }
   const startRec = () => { recRef.current = { frames: [], repAt: [], on: true }; setRec({ frames: 0, reps: 0, gaps: 0 }) }
   const plusOne = () => { if (recRef.current?.on) recRef.current.repAt.push(Date.now()) }
@@ -130,12 +132,12 @@ function Live({ mode, code, onExit }: { mode: Mode; code: string; onExit: () => 
     const r = recRef.current; if (!r) return
     r.on = false
     const id = `sts-${new Date().toISOString().slice(0, 10)}-${Date.now().toString(36).slice(-4)}`
-    const fx = buildFixture(r.frames, r.repAt, { id, path: 'webview', phone: PHONE, camera: 'side', notes: [notes, `delegate ${ready?.delegate ?? '?'}`, `cam ${ready?.cam.w ?? '?'}x${ready?.cam.h ?? '?'}@${ready?.cam.fps ?? '?'}`].filter(Boolean).join(' · ') })
+    const fx = buildFixture(r.frames, r.repAt, { id, path: 'native', phone: PHONE, camera: 'side', notes: [notes, `native GPU · input ${ready?.inputW ?? '?'}x${ready?.inputH ?? '?'} · cam ${camFps} fps`].filter(Boolean).join(' · ') })
     const g = gaps(r.frames)
     try {
       const file = new File(Paths.cache, `${id}.json`)
       file.write(JSON.stringify(fx))
-      console.log('[spot-record]', JSON.stringify({ id, frames: fx.frames.length, fps: fx.fps, manualReps: fx.manualReps, gaps: g, uri: file.uri }))
+      console.log('[spot-record]', JSON.stringify({ id, frames: fx.frames.length, fps: fx.fps, manualReps: fx.manualReps, gaps: g, uri: file.uri, path: 'native' }))
       if (await Sharing.isAvailableAsync()) await Sharing.shareAsync(file.uri, { mimeType: 'application/json', UTI: 'public.json', dialogTitle: `Save ${id}.json` })
       setRec({ frames: fx.frames.length, reps: fx.manualReps, gaps: g.count, shared: `${id}.json · ${fx.frames.length} frames · ${fx.fps} fps · ${fx.manualReps} stand-ups counted · ${g.count} gaps` })
     } catch (e) { setRec({ frames: fx.frames.length, reps: fx.manualReps, gaps: g.count, error: `Could not save the file: ${String((e as Error).message ?? e)}` }) }
@@ -143,37 +145,23 @@ function Live({ mode, code, onExit }: { mode: Mode; code: string; onExit: () => 
   }
 
   const line = (s: string, tone = C.text) => <Text key={s} style={{ color: tone, fontSize: 17, lineHeight: 24 }}>{s}</Text>
-  const status = err ? `The camera could not start. ${err}` : !ready ? 'Getting the camera ready… (first start downloads about 7 MB)' : `${ready.delegate === 'GPU' ? 'Using the graphics chip' : 'Using the main processor only'}${ready.fallback ? ' (graphics chip did not start: ' + ready.fallback.slice(0, 80) + ')' : ''} · loaded in ${(ready.loadMs / 1000).toFixed(1)} s · camera ${ready.cam.w}×${ready.cam.h} at ${ready.cam.fps} fps`
+  const status = err ? `The camera could not start. ${err}` : !device ? 'No front camera found on this phone.' : !ready ? 'Getting the camera ready…' : `Native MediaPipe · camera ${format?.videoWidth ?? '?'}×${format?.videoHeight ?? '?'} at ${camFps} fps · model input ${ready.inputW}×${ready.inputH} · first pose after ${((ready.at - startedAt.current) / 1000).toFixed(1)} s`
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: C.ground }}>
       <View style={{ height: '42%' }}>
-        {perm?.granted ? (
-          <WebView
-            // Props per docs/spikes/SPOT-001-pose.md §5: baseUrl makes the inline page a secure context (getUserMedia needs one);
-            // camera permission was already granted through expo-camera above, so Android's onPermissionRequest auto-grants.
-            source={{ html: POSE_HTML, baseUrl: 'https://localhost' }}
-            originWhitelist={['*']}
-            javaScriptEnabled
-            allowsInlineMediaPlayback
-            mediaPlaybackRequiresUserAction={false}
-            mediaCapturePermissionGrantType="grant"
-            webviewDebuggingEnabled={__DEV__}
-            onMessage={onMessage}
-            onError={(ev) => setErr(ev.nativeEvent.description)}
-            style={{ flex: 1, backgroundColor: '#000' }}
-          />
+        {hasPermission && device ? (
+          <Camera style={{ flex: 1 }} device={device} format={format} fps={camFps} isActive pixelFormat="yuv" frameProcessor={pose.frameProcessor} onLayout={pose.cameraViewLayoutChangeHandler} onError={(e) => setErr(e.message)} />
         ) : (
-          <View style={{ flex: 1, justifyContent: 'center', padding: 24 }}>{line(perm?.granted === false && !perm.canAskAgain ? 'Camera access is off. Turn it on in the phone settings for Spot.' : 'Spot needs the camera to see the shape of your movement.')}</View>
+          <View style={{ flex: 1, justifyContent: 'center', padding: 24 }}>{line('Spot needs the camera to see the shape of your movement.')}</View>
         )}
       </View>
       <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 16, gap: 10 }}>
-        {line(mode === 'connect' ? `Connected · ${code}` : mode === 'measure' ? 'Checking the camera' : 'Recording a session', C.dim)}
+        {line(mode === 'measure' ? 'Checking the camera (native)' : 'Recording a session (native)', C.dim)}
         {line(status, err ? C.adjust : C.dim)}
-        {mode === 'connect' && line('Prop the phone at hip height, sideways, about 3 steps away.')}
-        {stats && line(`Frames per second: ${stats.fps} (camera gives ${stats.camFps})`, stats.fps >= 15 ? C.good : C.adjust)}
-        {stats && line(`Time to find the pose: ${stats.inferMs} ms (slowest 1 in 20: ${stats.inferP95} ms) · frames skipped: ${stats.droppedPerS} per second, ${stats.dropped} so far`)}
-        {stats && line(`Hand-off to the app: ${delayRead.mean.toFixed(0)} ms (slowest 1 in 20: ${delayRead.p95.toFixed(0)} ms) · frames without a person: ${stats.noPose}/s · visibility values: ${stats.hasVisibility ? 'yes' : 'no'}`)}
-        {mode !== 'connect' && line(batteryLine(bat, elapsed) + ` · running ${mmss(elapsed)}`)}
+        {stats && line(`Frames per second: ${stats.fps} (camera gives ${stats.camFps}; the library caps at about 15)`, stats.fps >= 15 ? C.good : C.adjust)}
+        {stats && line(`Time to find the pose: ${stats.inferMs} ms (slowest 1 in 20: ${stats.inferP95} ms) · frames skipped: about ${stats.droppedPerS} per second (camera rate minus pose rate)`)}
+        {stats && line(`Frames without a person: ${stats.noPose}/s · visibility values: ${stats.hasVisibility ? 'yes' : 'no'} · hand-off delay: not measurable on this path (${delayRead.n} samples)`)}
+        {line(batteryLine(bat, elapsed) + ` · running ${mmss(elapsed)}`)}
         {mode === 'measure' && (
           <View style={{ gap: 10 }}>
             <Btn label={stillLeft !== null ? `Hold still… ${Math.ceil(stillLeft / 1000)}` : 'Measure steadiness (stand still 3 s)'} onPress={holdStill} disabled={!ready || stillLeft !== null} tone={C.good} hint="Stand still for three seconds to measure how much the landmarks wobble" />
@@ -195,7 +183,7 @@ function Live({ mode, code, onExit }: { mode: Mode; code: string; onExit: () => 
             {(rec?.shared || rec?.error) && <Btn label="Record another" onPress={() => setRec(null)} tone={C.adjust} hint="Start a new recording" />}
           </View>
         )}
-        {ready && line(`Secure context: ${ready.secure ? 'yes' : 'no'} · per-frame camera callback: ${ready.rvfc ? 'yes' : 'no (estimated)'} · ${PHONE.model} · ${PHONE.os}`, C.dim)}
+        {line(`${PHONE.model} · ${PHONE.os} · native path`, C.dim)}
         <Btn label="Back" onPress={onExit} tone={C.surface} hint="Stop the camera and go back" />
       </ScrollView>
     </SafeAreaView>

@@ -1,0 +1,35 @@
+{
+  "name": "@spot/phone-native",
+  "private": true,
+  "main": "index.js",
+  "scripts": {
+    "start": "expo start --dev-client",
+    "typecheck": "tsc --noEmit",
+    "model": "curl -L -o assets/models/pose_landmarker_lite.task https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task",
+    "prebuild": "expo prebuild --platform android --no-install",
+    "build": "eas build -p android --profile development",
+    "android": "expo run:android",
+    "ios": "expo run:ios"
+  },
+  "dependencies": {
+    "@spot/contracts": "workspace:*",
+    "expo": "~54.0.0",
+    "expo-battery": "~10.0.0",
+    "expo-dev-client": "~6.0.0",
+    "expo-file-system": "~19.0.24",
+    "expo-keep-awake": "~15.0.0",
+    "expo-sharing": "~14.0.8",
+    "expo-status-bar": "~3.0.0",
+    "react": "19.1.0",
+    "react-native": "0.81.0",
+    "react-native-mediapipe-posedetection": "^0.4.0",
+    "react-native-vision-camera": "^4.7.3",
+    "react-native-worklets-core": "^1.6.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "typescript": "^5.6.0"
+  },
+  "version": "1.0.0"
+}

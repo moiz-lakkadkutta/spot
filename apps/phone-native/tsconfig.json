@@ -1,0 +1,5 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": { "types": ["react", "node"] },
+  "include": ["src", "../phone/src/stats.ts"]
+}
