@@ -12,6 +12,7 @@ Conditional entry: built only with a dedicated owner (see runbook). MIT.
 
 ## Run it
 1. `pnpm i` · `cp .env.example .env` · `pnpm db:up` · `pnpm db:migrate` · `pnpm --filter @spot/api prisma db seed`
+   (`apps/api`'s `prisma` script loads the root `.env` via `dotenv-cli`, so no exporting is needed; an existing `DATABASE_URL` in the environment, as in CI, takes precedence.)
 2. `pnpm api` (:4000) · `pnpm expo` (Fire OS) · `pnpm --filter @spot/phone start` (phone camera)
 3. `pnpm test` runs the heuristics against recorded landmark fixtures (`packages/heuristics/fixtures`).
 

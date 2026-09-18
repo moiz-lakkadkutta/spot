@@ -8,11 +8,15 @@
     "start": "node dist/index.js",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "prisma": "prisma",
+    "prisma": "dotenv -e ../../.env -- prisma",
     "lint": "eslint src"
+  },
+  "prisma": {
+    "seed": "tsx prisma/seed.ts"
   },
   "dependencies": {
     "@prisma/client": "^6.0.0",
+    "@spot/contracts": "workspace:*",
     "cors": "^2.8.5",
     "express": "^4.21.0",
     "helmet": "^8.0.0",
@@ -20,16 +24,16 @@
     "pino": "^9.4.0",
     "pino-http": "^10.3.0",
     "socket.io": "^4.8.0",
-    "zod": "^3.23.0",
-    "@spot/contracts": "workspace:*"
+    "zod": "^3.23.0"
   },
   "devDependencies": {
     "@types/cors": "^2.8.17",
     "@types/express": "^5.0.0",
     "@types/node": "^22.0.0",
+    "@types/supertest": "^6.0.2",
+    "dotenv-cli": "^11.0.0",
     "prisma": "^6.0.0",
     "supertest": "^7.0.0",
-    "@types/supertest": "^6.0.2",
     "tsx": "^4.19.0",
     "typescript": "^5.6.0",
     "vitest": "^2.1.0"
